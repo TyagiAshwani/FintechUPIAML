@@ -115,33 +115,80 @@ st.header("Our Performance")
 
 if st.button("Show Performance"):
 
+    # Generate test dataset
     test_data = pd.DataFrame({
         'amount': np.abs(np.random.normal(mean_amount, std_amount, 1000))
     })
 
-    true_risk = abs((test_data['amount'] - mean_amount) / std_amount)
-    true_scaled = (true_risk / max(true_risk)) * 100
+    # Inject synthetic anomalies (5%)
+    anomaly_indices = np.random.choice(1000, 50, replace=False)
+    test_data.loc[anomaly_indices, 'amount'] *= 3
 
-    model_scaled = true_scaled  # since statistical method
+    # True labels
+    y_true = np.zeros(1000)
+    y_true[anomaly_indices] = 1
 
-    correlation = np.corrcoef(true_scaled, model_scaled)[0,1]
-    coverage = sum(model_scaled > 60) / len(model_scaled)
+    # ---------------- MODEL RISK SCORING ----------------
+    true_risk = np.abs((test_data['amount'] - mean_amount) / std_amount)
 
-    # RESULTS FIRST
+    # Sensitivity influences model aggressiveness
+    sensitivity_factor = sensitivity / 5  # normalize roughly
+    noise = np.random.normal(0, 0.3, len(true_risk))
+
+    model_risk = true_risk * sensitivity_factor * (1 + noise)
+    model_scaled = (model_risk / max(model_risk)) * 100
+
+    # Classification threshold based on sensitivity
+    threshold = 60 - (sensitivity * 1.5)
+    y_pred = (model_scaled > threshold).astype(int)
+
+    # ---------------- METRICS ----------------
+    TP = sum((y_true == 1) & (y_pred == 1))
+    FP = sum((y_true == 0) & (y_pred == 1))
+    TN = sum((y_true == 0) & (y_pred == 0))
+    FN = sum((y_true == 1) & (y_pred == 0))
+
+    precision = TP / (TP + FP + 1e-6)
+    recall = TP / (TP + FN + 1e-6)
+    f1 = 2 * (precision * recall) / (precision + recall + 1e-6)
+    correlation = np.corrcoef(true_risk, model_scaled)[0,1]
+
+    # ---------------- DRIFT DETECTION ----------------
+    drift_mean = abs(test_data['amount'].mean() - mean_amount)
+    drift_score = drift_mean / mean_amount
+
+    # ---------------- DISPLAY METRICS ----------------
     st.subheader("Model Evaluation Metrics")
 
-    colA, colB = st.columns(2)
-    colA.metric("Risk Score Correlation", f"{round(correlation*100,2)} %")
-    colB.metric("High Risk Coverage (>60)", f"{round(coverage*100,2)} %")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Precision", f"{round(precision*100,2)} %")
+    col2.metric("Recall", f"{round(recall*100,2)} %")
+    col3.metric("F1 Score", f"{round(f1*100,2)} %")
 
-    st.markdown("Higher correlation indicates stronger anomaly alignment.")
+    col4, col5 = st.columns(2)
+    col4.metric("Risk Correlation", f"{round(correlation*100,2)} %")
+    col5.metric("Drift Score", f"{round(drift_score*100,2)} %")
 
-    # 3D VISUAL BELOW
-    st.subheader("3D Risk Alignment Map")
+    st.markdown("Sensitivity directly affects detection threshold and aggressiveness.")
+
+    # ---------------- CONFUSION MATRIX ----------------
+    st.subheader("Confusion Matrix")
+
+    cm_df = pd.DataFrame(
+        [[TP, FP],
+         [FN, TN]],
+        columns=["Predicted Fraud", "Predicted Normal"],
+        index=["Actual Fraud", "Actual Normal"]
+    )
+
+    st.dataframe(cm_df)
+
+    # ---------------- 3D VISUALIZATION ----------------
+    st.subheader("3D Risk Distribution Map")
 
     fig = go.Figure(data=[go.Scatter3d(
         x=test_data['amount'][:200],
-        y=true_scaled[:200],
+        y=true_risk[:200],
         z=model_scaled[:200],
         mode='markers',
         marker=dict(
@@ -155,7 +202,7 @@ if st.button("Show Performance"):
     fig.update_layout(
         scene=dict(
             xaxis_title='Transaction Amount',
-            yaxis_title='True Risk Score',
+            yaxis_title='True Risk Intensity',
             zaxis_title='Model Risk Score'
         ),
         height=700
